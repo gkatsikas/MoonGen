@@ -14,7 +14,7 @@ local ffi	= require "ffi"
 local ETH_HEADER_LENGHT = 14
 local MAX_PCAP_PKTS_NO  = 4228  -- 2048
 
--- sudo MoonGen examples/snf/from-pcap-noviflow.lua 2 10000000000 0 /home/katsikas/nfv/hypernf-controller/data/filter_covered_new/orig_acl_251_64_pcap2 /home/katsikas/nfv/hypernf-controller/data/filter_covered_new/orig_acl_251_64_pcap4 hw left
+-- sudo ../../build/MoonGen from-pcap-noviflow.lua 2 10000000000 0 /home/katsikas/nfv/snf-controller/data/filter_covered_new/orig_acl_251_64_pcap2 /home/katsikas/nfv/snf-controller/data/filter_covered_new/orig_acl_251_64_pcap4 hw left
 
 function master(trxPortsNo, rate, maxPackets, sourcePCAP0, sourcePCAP1, timestamping, side)
 	local trxPortsNo, rate, maxPackets = tonumberall(trxPortsNo, rate, maxPackets)

@@ -23,7 +23,7 @@ local DEV_LIST  = {
 	3
 }
 
---Usage: sudo build/MoonGen examples/snf/rx-multiport.lua 4 2000000 0
+--Usage: sudo ../../build/MoonGen rx-multiport.lua 4 2000000 0
 
 --! @brief: Start a number of Rx threads
 function master(rxPortsNo, maxPackets, timestamping)

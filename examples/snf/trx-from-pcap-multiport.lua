@@ -13,7 +13,7 @@ local ffi	= require "ffi"
 
 local MAX_PCAP_PKTS_NO = 4228  -- 2048
 
--- sudo MoonGen examples/snf/trx-from-pcap-multiport.lua 2 10000000000 64 0 /home/katsikas/nfv/hypernf-controller/data/original/acl_251_compressed.pcap sw left
+-- sudo ../../build/MoonGen trx-from-pcap-multiport.lua 2 10000000000 64 0 /home/katsikas/nfv/snf-controller/data/original/acl_251_compressed.pcap sw left
 
 function master(trxPortsNo, rate, pktSize, maxPackets, sourcePCAP, timestamping, side)
 	local trxPortsNo, rate, pktSize, maxPackets = tonumberall(trxPortsNo, rate, pktSize, maxPackets)

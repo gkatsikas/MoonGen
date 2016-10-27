@@ -92,7 +92,7 @@ local NUM_PORTS = 10
 local NUM_FLOWS	= 250
 local RUN_TIME  = 20
 
---Usage: sudo MoonGen examples/snf/trx-multiport.lua 2 10000000000 60 100000000000 0 left
+--Usage: sudo ../../build/MoonGen trx-multiport.lua 2 10000000000 60 100000000000 0 left
 
 function master(trxPortsNo, txRate, pktSize, maxTxPackets, timestamping, side)
 	local trxPortsNo, txRate, pktSize, maxTxPackets = tonumberall(trxPortsNo, txRate, pktSize, maxTxPackets)
@@ -225,7 +225,8 @@ function txSlave(port, queueNo, core, maxPacketsPerCore, pktSize, timestamping, 
 		bufs:alloc(pktSize)
 
 		for _, buf in ipairs(bufs) do
-			local data = ffi.cast("uint8_t*", buf.pkt.data)
+			-- TOFIX: buf.pkt.data replaced by buf.udata64
+			local data = ffi.cast("uint8_t*", buf.udata64)
 			-- Select randomized IP addresses and ports
 			-- Change idx_end-idx_start bytes randomly
 			for i = src_idx_start, src_idx_end do

@@ -27,7 +27,7 @@ local NUM_FLOWS	= 254
 local RUN_TIME  = 20
 local txCounterSlaveOn = false
 
---Usage: sudo MoonGen examples/snf/trx.lua 0 10000000000 60 100000000000 1
+--Usage: sudo ../../build/MoonGen trx.lua 0 10000000000 60 100000000000 1
 
 function master(trxPortNo, txRate, pktSize, maxTxPackets, timestamping)
 	local trxPortNo, txRate, pktSize, maxTxPackets = tonumberall(trxPortNo, txRate, pktSize, maxTxPackets)

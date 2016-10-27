@@ -1,19 +1,19 @@
 --! @file from-pcap-soft.lua
 --! @brief Replay from 2 PCAP files on two ports and receive on the same ports
 
-local mg		= require "dpdk"
+local mg	= require "dpdk"
 local memory	= require "memory"
 local device	= require "device"
-local log		= require "log"
-local ts 		= require "timestamping"
-local pcap		= require "pcap"
-local stats		= require "stats"
-local hist		= require "histogram"
-local ffi		= require "ffi"
+local log	= require "log"
+local ts 	= require "timestamping"
+local pcap	= require "pcap"
+local stats	= require "stats"
+local hist	= require "histogram"
+local ffi	= require "ffi"
 
 local MAX_PCAP_PKTS_NO = 4228  -- 2048
 
--- sudo MoonGen examples/hyper-nf/from-pcap-soft.lua 2 10000000000 64 0 /home/katsikas/nfv/hypernf-controller/data/filter_covered/orig_acl_251_64_pcap2 /home/katsikas/nfv/hypernf-controller/data/filter_covered/orig_acl_251_64_pcap4 hw left
+-- sudo ../../build/MoonGen from-pcap-soft.lua 2 10000000000 64 0 /home/katsikas/nfv/snf-controller/data/filter_covered/orig_acl_251_64_pcap2 /home/katsikas/nfv/snf-controller/data/filter_covered/orig_acl_251_64_pcap4 hw left
 
 function master(trxPortsNo, rate, pktSize, maxPackets, sourcePCAP0, sourcePCAP1, timestamping, side)
 	local trxPortsNo, rate, pktSize, maxPackets = tonumberall(trxPortsNo, rate, pktSize, maxPackets)

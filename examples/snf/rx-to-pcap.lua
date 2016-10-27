@@ -16,7 +16,7 @@ local pcap	= require "pcap"
 
 local ffi	= require "ffi"
 
---Usage: sudo MoonGen examples/snf/rx-to-pcap.lua 0 15000000
+--Usage: sudo ../../build/MoonGen rx-to-pcap.lua 0 15000000
 
 --! @brief: Start a number of Rx threads, one per queue
 function master(rxPort, maxPackets)

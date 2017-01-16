@@ -1,22 +1,18 @@
 --! @file trx-multiport.lua
 --! @brief Send and receive on a set of ports with timestamping
 
-local mg	= require "dpdk"
-local memory	= require "memory"
-local device	= require "device"
-local ts	= require "timestamping"
-local dpdkc	= require "dpdkc"
-local filter	= require "filter"
+local moongen = require "moongen"
+local memory  = require "memory"
+local device  = require "device"
+local ts      = require "timestamping"
+local stats   = require "stats"
+local hist    = require "histogram"
+local timer   = require "timer"
+local log     = require "log"
+local ffi     = require "ffi"
 
-local stats	= require "stats"
-local hist	= require "histogram"
-local timer	= require "timer"
-local log	= require "log"
-
-local ffi	= require "ffi"
-
-local ETH_DST   = "ec:f4:bb:d6:06:d8"
-local IP_SRC    = "1.0.0.1"
+local ETH_DST = "ec:f4:bb:d6:06:d8"
+local IP_SRC  = "1.0.0.1"
 
 ------------------
 -- 40 Gbps traffic
@@ -122,12 +118,12 @@ function master(trxPortsNo, txRate, pktSize, maxTxPackets, timestamping, side)
 	-- We divide the total rate among all requested cores
 	txRate = (txRate / txQueuesNo) or (10000000000 / txQueuesNo)
 
-	print("Number of Tx Ports: ", trxPortsNo)
-	print("Number of Rx Ports: ", trxPortsNo)
-	print("    Tx   Rate/Core: ", txRate/1000000000,"Gbps")
-	print("    Tx  Packets No: ", maxTxPackets)
-	print("    Tx Packet Size: ", pktSize)
-	print("              Side: ", side)
+	log:info("Number of Tx Ports: %d", trxPortsNo)
+	log:info("Number of Rx Ports: %d", trxPortsNo)
+	log:info("    Tx   Rate/Core: %.2f Gbps", txRate/1000000000)
+	log:info("    Tx  Packets No: %d", maxTxPackets)
+	log:info("    Tx Packet Size: %d", pktSize)
+	log:info("              Side: %s", side)
 
 	-- Configure each device for Tx
 	local txDevs = {}
@@ -145,37 +141,37 @@ function master(trxPortsNo, txRate, pktSize, maxTxPackets, timestamping, side)
 	for i=0, #txDevs-1 do
 		txDevs[i+1]:getTxQueue(txQueue):setRate(txRate)
 		local coreOfQueue = txCores[i+1][math.fmod(txQueue, #txCores) + 1]
-		printf("[Dev %d] [Tx Queue %d] Core: %d",  i, txQueue, coreOfQueue)
-		mg.launchLuaOnCore(coreOfQueue ,"txSlave", i, txQueue, coreOfQueue, maxTxPackets, pktSize, false, side)
+		log:info("[Dev %d] [Tx Queue %d] Core: %d",  i, txQueue, coreOfQueue)
+		moongen.startTaskOnCore(coreOfQueue ,"txTask", i, txQueue, coreOfQueue, maxTxPackets, pktSize, false, side)
 		--break
 	end
 
 	-- Rx threads (We receive from a single queue per port)
 	for i = 0, #rxDevs-1 do
 		local coreOfQueue = rxCores[i+1][1]
-		printf("[Dev %d] [Rx Queue 0] Core: %d", i, coreOfQueue)
-		mg.launchLuaOnCore(coreOfQueue, "rxCounterSlave", i, rxDevs[i+1], 0, coreOfQueue)
+		log:info("[Dev %d] [Rx Queue 0] Core: %d", i, coreOfQueue)
+		moongen.startTaskOnCore(coreOfQueue, "rxCounterTask", i, rxDevs[i+1], 0, coreOfQueue)
 	end
 
 	-- Tx counter
-	local txCtr = mg.launchLua("txCounterSlave", txDevs)
+	local txCtr = moongen.startTask("txCounterTask", txDevs)
 
 	-- HW-based Timestampers
 	if (timestamping) then 
-		print("Hardware Timestampers")
+		log:info("Hardware Timestampers")
 		hwTimestampers(trxPortsNo, txDevs, rxDevs, side)
 	end
 
 	local tp = txCtr:wait()
 	printTxStats(tp)
 
-	mg.waitForSlaves()
+	moongen.waitForTasks()
 end
 
 --! @brief: A thread that transmits frames with randomized IPs and ports
-function txSlave(port, queueNo, core, maxPacketsPerCore, pktSize, timestamping, side)
+function txTask(port, queueNo, core, maxPacketsPerCore, pktSize, timestamping, side)
 	local queue = device.get(port):getTxQueue(queueNo)
-	printf("[Dev %d] [Queue %d] [Core %d] Tx Slave", port, queueNo, core)
+	log:info("[Dev %d] [Queue %d] [Core %d] Tx Slave", port, queueNo, core)
 
 	local src_subnet_list
 	local dst_subnet_list
@@ -204,7 +200,7 @@ function txSlave(port, queueNo, core, maxPacketsPerCore, pktSize, timestamping, 
 	MAX_BURST_SIZE = 1
 	if (not timestamping) then MAX_BURST_SIZE = 31 end
 
-	local lastPrint = mg.getTime()
+	local lastPrint = moongen.getTime()
 	local totalSent = 0
 	local lastTotal = 0
 	local lastSent  = 0
@@ -221,7 +217,7 @@ function txSlave(port, queueNo, core, maxPacketsPerCore, pktSize, timestamping, 
 	local dst_idx_start = 30 -- 30-33
 	local dst_idx_end   = 30
 
-	while (mg.running()) and (not maxPacketsPerCore or totalSent <= maxPacketsPerCore) do
+	while (moongen.running()) and (not maxPacketsPerCore or totalSent <= maxPacketsPerCore) do
 		bufs:alloc(pktSize)
 
 		for _, buf in ipairs(bufs) do
@@ -254,21 +250,21 @@ function txSlave(port, queueNo, core, maxPacketsPerCore, pktSize, timestamping, 
 
 		--lastPrint, lastTotal = countAndPrintThroughputPerCore(core, totalSent, lastPrint, lastTotal, pktSize)
 	end
-	mg.sleepMillis(500)
-	mg.stop()
-	--printf("[Core %d] Sent %d packets", core, totalSent)
+	moongen.sleepMillis(500)
+	moongen.stop()
+	--log:info("[Core %d] Sent %d packets", core, totalSent)
 end
 
 --! @brief: A thread that counts statistics about the transmitted packets
-function txCounterSlave(devs)
+function txCounterTask(devs)
 	local ctrs = map(devs, function(dev) return stats:newDevTxCounter(dev) end)
 	local runtime = timer:new(RUN_TIME - 1)
-	mg.sleepMillisIdle(1000) -- measure the steady state
-	while mg.running() and runtime:running() do
+	moongen.sleepMillisIdle(1000) -- measure the steady state
+	while moongen.running() and runtime:running() do
 		for _, ctr in ipairs(ctrs) do
 			ctr:update()
 		end
-		mg.sleepMillisIdle(10)
+		moongen.sleepMillisIdle(10)
 	end
 	local tp, stdDev, sum = 0, 0, 0
 	for _, ctr in ipairs(ctrs) do
@@ -280,24 +276,24 @@ function txCounterSlave(devs)
 	return tp, stdDev, sum
 end
 
-function rxCounterSlave(rxDevNo, rxDev, queueNo, core)
-	printf("[Dev %d] [Queue %d] [Core %d] Rx Slave", rxDevNo, queueNo, core)
+function rxCounterTask(rxDevNo, rxDev, queueNo, core)
+	log:info("[Dev %d] [Queue %d] [Core %d] Rx Slave", rxDevNo, queueNo, core)
 	local queue = rxDev:getRxQueue(queueNo)
 	local bufs = memory.bufArray()
 	local ctr = stats:newDevRxCounter(rxDev, "plain")
 	local pkts = 0
-	while mg.running() do
+	while moongen.running() do
 		local rx = queue:recv(bufs)
 		pkts = pkts + rx
 		ctr:update()
 		bufs:freeAll()
 	end
 	ctr:finalize()
-	printf("[Core %d] Rx terminated after receiving %d packets", core, pkts)
+	log:info("[Core %d] Rx terminated after receiving %d packets", core, pkts)
 end
 
 function hwTimestampers(trxPortsNo, txDevs, rxDevs, side)
-	printf("[HW Timestampers]")
+	log:info("[HW Timestampers]")
 
 	-- Pick a packet from the correct subnet
 	local src_subnet_list
@@ -320,8 +316,8 @@ function hwTimestampers(trxPortsNo, txDevs, rxDevs, side)
 	dstIP_1   = dst_subnet_list[2]
 	dstPort_1 = PTP_PORT_DST
 
-	printf("[HW Timestamper] PTP packet %s:%d --> %s:%d", srcIP_0, srcPort_0, dstIP_0, dstPort_0)
-	printf("[HW Timestamper] PTP packet %s:%d --> %s:%d", srcIP_1, srcPort_1, dstIP_1, dstPort_1)
+	log:info("[HW Timestamper] PTP packet %s:%d --> %s:%d", srcIP_0, srcPort_0, dstIP_0, dstPort_0)
+	log:info("[HW Timestamper] PTP packet %s:%d --> %s:%d", srcIP_1, srcPort_1, dstIP_1, dstPort_1)
 
 	local txQueue0 = txDevs[1]:getTxQueue(1)
 	local rxQueue0 = rxDevs[2]:getRxQueue(1)
@@ -369,20 +365,20 @@ function hwTimestampers(trxPortsNo, txDevs, rxDevs, side)
 	local hist1 = hist:new()
 	--local hist2 = hist:new()
 	--local hist3 = hist:new()
-	while mg.running() do
+	while moongen.running() do
 		hist0:update(timestamper0:measureLatency())
 		hist1:update(timestamper1:measureLatency())
 	--	hist2:update(timestamper2:measureLatency())
 	--	hist3:update(timestamper3:measureLatency())
 	end
-	printf("[HW Timestampers] Calculating histograms]")
+	log:info("[HW Timestampers] Calculating histograms]")
 	hist0:save("histogram-"..side.."-p0.csv")
 	hist1:save("histogram-"..side.."-p1.csv")
 	--hist2:save("histogram-"..side.."-p2.csv")
 	--hist3:save("histogram-"..side.."-p3.csv")
-	printf("\n")
+	log:info("\n")
 
-	printf("[HW Timestampers] Histograms saved]")
+	log:info("[HW Timestampers] Histograms saved]")
 	hist0:print()
 	hist1:print()
 	--hist2:print()
@@ -390,7 +386,7 @@ function hwTimestampers(trxPortsNo, txDevs, rxDevs, side)
 end
 
 function hwTimestamper(txPort, rxPort, txQueue, rxQueue, side, subnet)
-	printf("[HW Timestamper] Tx Port %d, Rx Port %d", txPort, rxPort)
+	log:info("[HW Timestamper] Tx Port %d, Rx Port %d", txPort, rxPort)
 
 	-- Pick a packet from the correct subnet
 	local src_subnet_list
@@ -407,20 +403,20 @@ function hwTimestamper(txPort, rxPort, txQueue, rxQueue, side, subnet)
 	srcPort = PORT_SRC
 	dstIP   = dst_subnet_list[subnet]
 	dstPort = PORT_DST
-	printf("[HW Timestamper] PTP packet %s:%d --> %s:%d", srcIP, srcPort, dstIP, dstPort)
+	log:info("[HW Timestamper] PTP packet %s:%d --> %s:%d", srcIP, srcPort, dstIP, dstPort)
 
 	local rxDev = rxQueue.dev
 	rxDev:filterTimestamps(rxQueue)
 	local timestamper = ts:newUdpTimestamperWithData(txQueue, rxQueue, srcIP, dstIP, srcPort, dstPort)
 	local hist = hist:new()
-	while mg.running() do
+	while moongen.running() do
 		hist:update(timestamper:measureLatency())
 	end
 
-	printf("[HW Timestamper] Calculating histogram")
+	log:info("[HW Timestamper] Calculating histogram")
 	hist:save("histogram_"..side.."_"..subnet..".csv")
-	printf("\n")
-	printf("[HW Timestamper] Histogram saved")
+	log:info("\n")
+	log:info("[HW Timestamper] Histogram saved")
 	hist:print()
 end
 
@@ -431,16 +427,16 @@ function printTxStats(ctr)
 	local freqInGHz = 3.20
 	local cyclesPerPkt = freqInGHz * 10^3 / rates.avg
 	local relStdDev = rates.stdDev / rates.avg
-	print("[Tx] Cycles/Pkt: " .. cyclesPerPkt .. " StdDev: " .. cyclesPerPkt * relStdDev)
+	log:info("[Tx] Cycles/Pkt: %.2f, StdDev: %.2f", cyclesPerPkt, cyclesPerPkt * relStdDev)
 end
 
 --! @brief: A method that "manually" derives the packet rate per core
 function countAndPrintThroughputPerCore(core, totalSent, lastPrint, lastTotal, pktSize)
 	-- Count throughput
-	local time = mg.getTime()
+	local time = moongen.getTime()
 	if time - lastPrint > 1 then
 		local mpps = (totalSent - lastTotal) / (time - lastPrint) / 10^6
-		printf("[Core %d] Sent %d packets, current rate %.2f Mpps, %.2f MBit/s, %.2f MBit/s wire rate", 
+		log:info("[Core %d] Sent %d packets, current rate %.2f Mpps, %.2f MBit/s, %.2f MBit/s wire rate", 
 				core, totalSent, mpps, mpps * pktSize * 8, mpps * (pktSize+20) * 8)
 		lastTotal = totalSent
 		lastPrint = time

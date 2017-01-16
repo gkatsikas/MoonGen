@@ -1,15 +1,15 @@
 --! @file from-pcap-soft.lua
 --! @brief Replay from 2 PCAP files on two ports and receive on the same ports
 
-local mg	= require "dpdk"
-local memory	= require "memory"
-local device	= require "device"
-local log	= require "log"
-local ts 	= require "timestamping"
-local pcap	= require "pcap"
-local stats	= require "stats"
-local hist	= require "histogram"
-local ffi	= require "ffi"
+local moongen = require "moongen"
+local memory  = require "memory"
+local device  = require "device"
+local log     = require "log"
+local ts      = require "timestamping"
+local pcap    = require "pcap"
+local stats   = require "stats"
+local hist    = require "histogram"
+local ffi     = require "ffi"
 
 local MAX_PCAP_PKTS_NO = 4228  -- 2048
 
@@ -18,7 +18,7 @@ local MAX_PCAP_PKTS_NO = 4228  -- 2048
 function master(trxPortsNo, rate, pktSize, maxPackets, sourcePCAP0, sourcePCAP1, timestamping, side)
 	local trxPortsNo, rate, pktSize, maxPackets = tonumberall(trxPortsNo, rate, pktSize, maxPackets)
 	if not trxPortsNo or not rate or not maxPackets or not pktSize or not sourcePCAP0 or not sourcePCAP1 or not side then
-		return log:info([[
+		return log:error([[
 			Usage: trxPortsNo rate pktSize maxPackets sourcePCAP0 sourcePCAP1 timestamping side
 			Timestamping = sw means software-based timestamping
 			Timestamping = hw means hardware-based timestamping
@@ -62,38 +62,38 @@ function master(trxPortsNo, rate, pktSize, maxPackets, sourcePCAP0, sourcePCAP1,
 	end
 	-- Wait until the links are up
 	device.waitForLinks()
-	mg.sleepMillis(100)
+	moongen.sleepMillis(100)
 
 	-- Find how many packets there are in the input pcap file
 	for i=1, trxPortsNo do
 		local pSize = countPCAPPackets(pcap[i], pktSize, i)
-		printf("[Main] Input PCAP file %s contains %d packets", pcap[i], pSize)
+		log:info("[Main] Input PCAP file %s contains %d packets", pcap[i], pSize)
 		if pSize > MAX_PCAP_PKTS_NO then
-			return log:info([[PCAP file %s contains more than %d packets]], pcap[i], MAX_PCAP_PKTS_NO)
+			return log:error("PCAP file %s contains more than %d packets", pcap[i], MAX_PCAP_PKTS_NO)
 		end
 		pcapSize[i] = pSize
 		udpBuf[i]   = extractUDPInfoFromPCAP(pcap[i], pktSize)
-		printf("[Main] PCAP file %s contains %d UDP packets", pcap[i], #udpBuf[i])
+		log:info("[Main] PCAP file %s contains %d UDP packets", pcap[i], #udpBuf[i])
 	end
 
 	q = 0
 	-- Tx threads on queue 0
 	for i=1, #txDevs do
 		--local coreOfQueue = txCores[i][math.fmod(q, #txCores) + 1]
-		--printf("[Dev %d] [Tx Queue %d] Core: %d", txPorts[i], q, coreOfQueue)
+		--log:info("[Dev %d] [Tx Queue %2d] Core: %d", txPorts[i], q, coreOfQueue)
 		if ( hw_timestamping or not timestamping ) then
-			mg.launchLua("pcapSendSlave",       trxPorts[i], txDevs[i], q, rate, maxPackets, pktSize, pcap[i], pcapSize[i])
-			--mg.launchLua("pcapSendBucketSlave", txPorts[i], txDevs[i], q, rate, maxPackets, pktSize, pcap[i], pcapSize[i])
+			moongen.startTask("pcapSendTask",       trxPorts[i], txDevs[i], q, rate, maxPackets, pktSize, pcap[i], pcapSize[i])
+			--moongen.startTask("pcapSendBucketTask", txPorts[i], txDevs[i], q, rate, maxPackets, pktSize, pcap[i], pcapSize[i])
 		else
-			mg.launchLua("pcapSendSlaveWithTS", trxPorts[i], txDevs[i], q, rate, maxPackets, pktSize, pcap[i], pcapSize[i])
+			moongen.startTask("pcapSendTaskWithTS", trxPorts[i], txDevs[i], q, rate, maxPackets, pktSize, pcap[i], pcapSize[i])
 		end
 	end
 
 	-- Rx threads on queue 0
 	for i=1, #rxDevs do
 		--local coreOfQueue = rxCores[i][1]
-		--printf("[Dev %d] [Rx Queue 0] Core: %d", rxPorts[i], coreOfQueue)
-		mg.launchLua("rxCounterSlave", trxPorts[i], rxDevs[i], q, sw_timestamping, side)
+		--log:info("[Dev %d] [Rx Queue 0] Core: %d", rxPorts[i], coreOfQueue)
+		moongen.startTask("rxCounterTask", trxPorts[i], rxDevs[i], q, sw_timestamping, side)
 	end
 
 	-- Latency calculation
@@ -101,12 +101,13 @@ function master(trxPortsNo, rate, pktSize, maxPackets, sourcePCAP0, sourcePCAP1,
 		--hwTimestampers(txDevs, rxDevs, udpBuf, side)
 	end
 
-	mg.waitForSlaves()
+	moongen.waitForTasks()
 end
 
 --! @brief: sends packets read from a PCAP file
-function pcapSendSlave(txPort, txDev, queueNo, rate, maxPackets, pktSize, sourcePCAP, pcapSize)
-	printf("[Dev %d] Tx PCAP Thread is running", txPort)
+function pcapSendTask(txPort, txDev, queueNo, rate, maxPackets, pktSize, sourcePCAP, pcapSize)
+	log:info("[Dev %d] Tx PCAP Thread is running", txPort)
+
 	-- Prepare sender queue and set the rate
 	local queue = txDev:getTxQueue(queueNo)
 	queue:setRate(rate)
@@ -116,7 +117,7 @@ function pcapSendSlave(txPort, txDev, queueNo, rate, maxPackets, pktSize, source
 	local mem  = memory.createMemPool()
 	local bufs = mem:bufArray(batchSize)
 	bufs:alloc(pktSize)
-	printf("[Dev %d] PCAP Sender Thread: Allocated space for %d packets", txPort, batchSize)
+	log:info("[Dev %d] PCAP Sender Thread: Allocated space for %d packets", txPort, batchSize)
 	
 	--real_bufs = {}
 	--local real_bufs = mem:bufArray(batchSize)
@@ -149,35 +150,35 @@ function pcapSendSlave(txPort, txDev, queueNo, rate, maxPackets, pktSize, source
 		--	--real_bufs[#real_bufs+1] = ffi.new("struct rte_mbuf")
 		--	--real_bufs[#real_bufs+1].pkt.pkt_len  = pkt.ip4:getLength()
 		--	--real_bufs[#real_bufs+1].pkt.data_len = pkt.ip4:getLength()
-		--	--printf("Done")
+		--	--log:info("Done")
 		--	--ffi.copy(real_bufs[#real_bufs+1], b, pkt.ip4:getLength())
 		--	--local new_b = ffi.new("struct rte_mbuf", pkt.ip4:getLength()+1)
 		--	--ffi.copy(new_b, b, pkt.ip4:getLength())
 		--	--real_buf[#real_buf + 1] = new_b
-		--	--printf("Packet size %d bytes", pkt.ip4:getLength())
+		--	--log:info("Packet size %d bytes", pkt.ip4:getLength())
 		--end
 		break    -- read only one big batch
 	end
-	printf("[Dev %d] PCAP Sender Thread: Loaded %d packets in memory", txPort, bufs.size)
+	log:info("[Dev %d] PCAP Sender Thread: Loaded %d packets in memory", txPort, bufs.size)
 
 	local pkt = 1
 	local ctr = stats:newDevTxCounter(txDev,"plain")
-	while mg.running() and (not maxPackets or pkt <= maxPackets) do
+	while moongen.running() and (not maxPackets or pkt <= maxPackets) do
 		--local counter = 0
 		--for _, b in ipairs(bufs) do
 		--	local data = ffi.cast("uint8_t*", b.pkt.data)
 		--	if ( data[23] == 17 ) then
 		--		local pkt = b:getUdpPacket()
-		--		--printf("UDP packet %s:%d --> %s:%d", pkt.ip4.src:getString(), pkt.udp:getSrcPort(), pkt.ip4.dst:getString(), pkt.udp:getDstPort())
+		--		--log:info("UDP packet %s:%d --> %s:%d", pkt.ip4.src:getString(), pkt.udp:getSrcPort(), pkt.ip4.dst:getString(), pkt.udp:getDstPort())
 		--		if ( pkt.udp:getSrcPort() == 123 and pkt.udp:getDstPort() == 2401 ) then
-		--			printf("======================================================")
-		--			printf("FOUND")
-		--			printf("======================================================")
+		--			log:info("======================================================")
+		--			log:info("FOUND")
+		--			log:info("======================================================")
 		--		end
 		--	end
 		--	counter = counter + 1
 		--end
-		--printf("%d packets sent", counter)
+		--log:info("%d packets sent", counter)
 
 		queue:send(bufs)
 		pkt = pkt + bufs.size
@@ -189,8 +190,8 @@ function pcapSendSlave(txPort, txDev, queueNo, rate, maxPackets, pktSize, source
 end
 
 --! @brief: sends packets, timestamped in software, read from a PCAP file
-function pcapSendSlaveWithTS(txPort, txDev, queueNo, rate, maxPackets, pktSize, sourcePCAP, pcapSize)
-	printf("[Dev %d] Tx PCAP Timestamper is running", txPort)
+function pcapSendTaskWithTS(txPort, txDev, queueNo, rate, maxPackets, pktSize, sourcePCAP, pcapSize)
+	log:info("[Dev %d] Tx PCAP Timestamper is running", txPort)
 	-- Prepare sender queue and set the rate
 	local queue = txDev:getTxQueue(queueNo)
 	queue:setRate(rate)
@@ -204,12 +205,12 @@ function pcapSendSlaveWithTS(txPort, txDev, queueNo, rate, maxPackets, pktSize, 
 		local rd = pcapReader:readPkt(bufs, true)
 		bucketSize = bucketSize + rd
 	end
-	printf("[Dev %d] Tx PCAP Timestamper: Loaded %d packets in memory", txPort, bufs.size)
+	log:info("[Dev %d] Tx PCAP Timestamper: Loaded %d packets in memory", txPort, bufs.size)
 	
 	local pkt = 0
 	local index = 2
 	local ctr = stats:newDevTxCounter(txDev,"plain")
-	while mg.running() and (not maxPackets or pkt <= maxPackets) do
+	while moongen.running() and (not maxPackets or pkt <= maxPackets) do
 		-- sendWithTimestamp method can only send the first packet of the buffer
 		-- We shuffle the first position of this buffer in every iteration
 		if (index > bufs.size) then index = 2 end
@@ -228,15 +229,15 @@ function pcapSendSlaveWithTS(txPort, txDev, queueNo, rate, maxPackets, pktSize, 
 	ctr:finalize()
 end
 
-function rxCounterSlave(rxDevNo, rxDev, queueNo, timestamping, side)
-	printf("[Dev %d] Rx Slave", rxDevNo)
+function rxCounterTask(rxDevNo, rxDev, queueNo, timestamping, side)
+	log:info("[Dev %d] Rx Task", rxDevNo)
 	local queue = rxDev:getRxQueue(queueNo)
 
-	local tscFreq    = mg.getCyclesFrequency()
+	local tscFreq    = moongen.getCyclesFrequency()
 	local timestamps = ffi.new("uint64_t[64]")
 	local bufs       = memory.bufArray(64)  -- 64
 	if ( timestamping ) then
-		printf("Rx is filtering timestamps")
+		log:info("Rx is filtering timestamps")
 		queue.dev:filterTimestamps(queue)
 	end
 	local rxts    = {}
@@ -244,7 +245,7 @@ function rxCounterSlave(rxDevNo, rxDev, queueNo, timestamping, side)
 		
 	local ctr   = stats:newDevRxCounter(rxDev, "plain")
 	local pkts  = 0
-	while mg.running() do
+	while moongen.running() do
 		local numPkts
 		if ( timestamping ) then
 			numPkts = queue:recvWithTimestamps(bufs, timestamps)
@@ -267,7 +268,7 @@ function rxCounterSlave(rxDevNo, rxDev, queueNo, timestamping, side)
 
 	if ( timestamping ) then
 		lat_file = "latency-"..side.."-dev"..rxDevNo..".txt"
-		printf("[PCAP Rx Timestamper] Dumping latency to %s", lat_file)
+		log:info("[PCAP Rx Timestamper] Dumping latency to %s", lat_file)
 		local f = io.open(lat_file, "w+")
 		for i, v in ipairs(results) do
 			f:write(v .. "\n")
@@ -275,11 +276,11 @@ function rxCounterSlave(rxDevNo, rxDev, queueNo, timestamping, side)
 		f:close()
 	end
 
-	printf("[Dev %d] Rx terminated after receiving %d packets", rxDevNo, pkts)
+	log:info("[Dev %d] Rx terminated after receiving %d packets", rxDevNo, pkts)
 end
 
 function hwTimestampers(txDevs, rxDevs, udpBuf, side)
-	printf("[HW Timestampers]")
+	log:info("[HW Timestampers]")
 
 	-- Pick a random index
 	srcIP   = udpBuf[1][2][1]
@@ -287,7 +288,7 @@ function hwTimestampers(txDevs, rxDevs, udpBuf, side)
 	dstIP   = udpBuf[1][2][3]
 	dstPort = udpBuf[1][2][4]
 	dstPort = 123
-	printf("PTP packet %s:%d --> %s:%d", srcIP, srcPort, dstIP, dstPort)
+	log:info("PTP packet %s:%d --> %s:%d", srcIP, srcPort, dstIP, dstPort)
 
 	local txQueue0 = txDevs[1]:getTxQueue(1)
 	local rxQueue0 = rxDevs[1]:getRxQueue(1)
@@ -309,7 +310,7 @@ function hwTimestampers(txDevs, rxDevs, udpBuf, side)
 	dstIP   = udpBuf[2][2][3]
 	dstPort = udpBuf[2][2][4]
 	dstPort = 123
-	printf("PTP packet %s:%d --> %s:%d", srcIP, srcPort, dstIP, dstPort)
+	log:info("PTP packet %s:%d --> %s:%d", srcIP, srcPort, dstIP, dstPort)
 
 	local txQueue1 = txDevs[2]:getTxQueue(1)
 	local rxQueue1 = rxDevs[2]:getRxQueue(1)
@@ -318,22 +319,22 @@ function hwTimestampers(txDevs, rxDevs, udpBuf, side)
 
 	local hist0 = hist:new()
 	local hist1 = hist:new()
-	while mg.running() do
+	while moongen.running() do
 		hist0:update(timestamper0:measureLatency())
 		hist1:update(timestamper1:measureLatency())
 	end
-	printf("[HW Timestampers] Calculating histograms]")
+	log:info("[HW Timestampers] Calculating histograms]")
 	hist0:save("latency-"..side.."-dev0.txt")
 	hist1:save("latency-"..side.."-dev1.txt")
-	printf("\n")
+	log:info("\n")
 
-	printf("[HW Timestampers] Histograms saved]")
+	log:info("[HW Timestampers] Histograms saved]")
 	hist0:print()
 	hist1:print()
 end
 
 function hwTimestamper(txPort, rxPort, txQueue, rxQueue, udpBuf)
-	printf("[HW Timestamper] Tx Port %d, Rx Port %d", txPort, rxPort)
+	log:info("[HW Timestamper] Tx Port %d, Rx Port %d", txPort, rxPort)
 
 	-- Pick a random index
 	srcIP   = udpBuf[14][1]
@@ -341,20 +342,20 @@ function hwTimestamper(txPort, rxPort, txQueue, rxQueue, udpBuf)
 	dstIP   = udpBuf[14][3]
 	dstPort = udpBuf[14][4]
 	dstPort = 123
-	printf("[HW Timestamper] PTP packet %s:%d --> %s:%d", srcIP, srcPort, dstIP, dstPort)
+	log:info("[HW Timestamper] PTP packet %s:%d --> %s:%d", srcIP, srcPort, dstIP, dstPort)
 
 	local rxDev = rxQueue.dev
 	rxDev:filterTimestamps(rxQueue)
 	--local timestamper = ts:newUdpTimestamper(txQueue, rxQueue)
 	local timestamper = ts:newUdpTimestamperWithData(txQueue, rxQueue, srcIP, dstIP, srcPort, dstPort)
 	local hist = hist:new()
-	while mg.running() do
+	while moongen.running() do
 		hist:update(timestamper:measureLatency())
 	end
-	printf("[HW Timestamper] Calculating histogram")
+	log:info("[HW Timestamper] Calculating histogram")
 	hist:save("histogram.csv")
-	printf("\n")
-	printf("[HW Timestamper] Histogram saved")
+	log:info("\n")
+	log:info("[HW Timestamper] Histogram saved")
 	hist:print()
 end
 
@@ -369,7 +370,7 @@ function txTimestamper(queue, pktSize, sourcePCAP, pcapSize)
 	bufs:alloc(pktSize)
 
 	local total_pkts = 0
-	while mg.running() do
+	while moongen.running() do
 		local bucketSize = 0
 		local pcapReader = pcapReader:newPcapReader(sourcePCAP, 10000)
 		while not pcapReader.done do
@@ -378,26 +379,26 @@ function txTimestamper(queue, pktSize, sourcePCAP, pcapSize)
 			queue:sendWithTimestamp(bufs)
 		end
 		total_pkts = total_pkts + bucketSize
-		--printf("[PCAP Tx Timestamper] Sent %d packets", bucketSize)
+		--log:info("[PCAP Tx Timestamper] Sent %d packets", bucketSize)
 	end
-	printf("[PCAP Tx Timestamper] Sent %d packets", total_pkts)
-	mg.sleepMillis(500)
-	mg.stop()
+	log:info("[PCAP Tx Timestamper] Sent %d packets", total_pkts)
+	moongen.sleepMillis(500)
+	moongen.stop()
 end
 
 function rxTimestamper(queue, pktSize)
-	local tscFreq    = mg.getCyclesFrequency()
+	local tscFreq    = moongen.getCyclesFrequency()
 	local timestamps = ffi.new("uint64_t[64]")
 	local bufs       = memory.bufArray(64)
 	queue.dev:filterTimestamps(queue)
 
-	printf("[PCAP Rx Timestamper] Starts")
+	log:info("[PCAP Rx Timestamper] Starts")
 
 	local rxts    = {}
 	local results = {}
-	while mg.running() do
+	while moongen.running() do
 		local numPkts = queue:recvWithTimestamps(bufs, timestamps)
-		printf("[PCAP Rx Timestamper] Received %d packets", numPkts)
+		log:info("[PCAP Rx Timestamper] Received %d packets", numPkts)
 		for i = 1, numPkts do
 			local rxTs = timestamps[i - 1]
 			local txTs = bufs[i]:getSoftwareTxTimestamp()
@@ -408,10 +409,10 @@ function rxTimestamper(queue, pktSize)
 		bufs:free(numPkts)
 	end
 	lat_file = "latency.txt"
-	printf("[PCAP Rx Timestamper] Dumping latency to %s", lat_file)
+	log:info("[PCAP Rx Timestamper] Dumping latency to %s", lat_file)
 	local f = io.open(lat_file, "w+")
 	for i, v in ipairs(results) do
-		printf("\t%f", v)
+		log:info("\t%f", v)
 		f:write(v .. "\n")
 	end
 	f:close()
@@ -436,13 +437,13 @@ function countPCAPPackets(sourcePCAP, pktSize, port)
 		--	-- UDP packet
 		--	if ( data[23] == 17 ) then
 		--		local pkt = b:getUdpPacket()
-		--		--printf("UDP packet %s:%d --> %s:%d", pkt.ip4.src:getString(), pkt.udp:getSrcPort(), pkt.ip4.dst:getString(), pkt.udp:getDstPort())
+		--		--log:info("UDP packet %s:%d --> %s:%d", pkt.ip4.src:getString(), pkt.udp:getSrcPort(), pkt.ip4.dst:getString(), pkt.udp:getDstPort())
 		--		f:write("Proto ".. pkt.ip4.protocol.."    "..pkt.ip4.src:getString()..":"..pkt.udp:getSrcPort().." --> "..pkt.ip4.dst:getString()..":"..pkt.udp:getDstPort().."\n")
 
 		--		if ( pkt.udp:getSrcPort() == 123 and pkt.udp:getDstPort() == 2401 ) then
-		--			printf("======================================================")
-		--			printf("FOUND")
-		--			printf("======================================================")
+		--			log:info("======================================================")
+		--			log:info("FOUND")
+		--			log:info("======================================================")
 		--		end
 		--	end
 		--	break
@@ -461,7 +462,7 @@ function laodPCAPPackets(sourcePCAP, pktSize, pcapSize)
 	mem  = memory.createMemPool()
 	bufs = mem:bufArray(batchSize)
 	bufs:alloc(pktSize)
-	printf("[PCAP Loader] Allocated space for %d packets", batchSize)
+	log:info("[PCAP Loader] Allocated space for %d packets", batchSize)
 	
 	bucketSize = 0
 	pcapReader = pcapReader:newPcapReader(sourcePCAP, 10000)
@@ -469,7 +470,7 @@ function laodPCAPPackets(sourcePCAP, pktSize, pcapSize)
 		local rd = pcapReader:readPkt(bufs, true)
 		bucketSize = bucketSize + rd
 	end
-	printf("[PCAP Loader] Loaded %d packets in memory", bufs.size)
+	log:info("[PCAP Loader] Loaded %d packets in memory", bufs.size)
 
 	return bufs
 end
@@ -496,14 +497,14 @@ function extractUDPInfoFromPCAP(sourcePCAP, pktSize)
 			-- UDP packet
 			if ( data[23] == 17 ) then
 				local pkt = b:getUdpPacket()
-				--printf("UDP packet %s:%d --> %s:%d", pkt.ip4.src:getString(), pkt.udp.src, pkt.ip4.dst:getString(), pkt.udp.dst)
+				--log:info("UDP packet %s:%d --> %s:%d", pkt.ip4.src:getString(), pkt.udp.src, pkt.ip4.dst:getString(), pkt.udp.dst)
 				udpBuf[#udpBuf+1] = {pkt.ip4.src:getString(), pkt.udp.src, pkt.ip4.dst:getString(), pkt.udp.dst}
 				udpCounter = udpCounter + 1
 
 				if ( pkt.udp.src == 123 and pkt.udp.dst == 2401 ) then
-					printf("======================================================")
-					printf("FOUND")
-					printf("======================================================")
+					log:info("======================================================")
+					log:info("FOUND")
+					log:info("======================================================")
 				end
 			end
 			break
@@ -512,7 +513,6 @@ function extractUDPInfoFromPCAP(sourcePCAP, pktSize)
 		pktCounter = pktCounter + rd
 	end
 	buf:freeAll()
-	--printf("------------------------------------------------------")
 
 	return udpBuf
 end
@@ -533,22 +533,22 @@ function deepcopy(orig)
 end
 
 --! @brief: sends a packet out
-function pcapSendBucketSlave(txPort, txDev, queueNo, rate, maxPackets, pktSize, sourcePCAP, pcapSize)
-	printf("[Dev %d] Tx PCAP Thread is running", txPort)
+function pcapSendBucketTask(txPort, txDev, queueNo, rate, maxPackets, pktSize, sourcePCAP, pcapSize)
+	log:info("[Dev %d] Tx PCAP Thread is running", txPort)
 	-- Prepare sender queue and set the rate
 	local queue = txDev:getTxQueue(queueNo)
 	queue:setRate(rate)
 	
 	local batchSize = 255
 	local bufs_no   = 8 --math.ceil(pcapSize / batchSize)
-	printf("[Dev %d] PCAP Sender Thread: Prepared %d buckets", txPort, bufs_no)
+	log:info("[Dev %d] PCAP Sender Thread: Prepared %d buckets", txPort, bufs_no)
 	local mem  = memory.createMemPool()
 	local bufs = {}
 	for i=1, bufs_no do
 		bufs[i] = mem:bufArray(batchSize)
 		bufs[i]:alloc(pktSize)
 	end
-	printf("[Dev %d] PCAP Sender Thread: Allocated %d bufs each at the size of %d packets", txPort, bufs_no, batchSize)
+	log:info("[Dev %d] PCAP Sender Thread: Allocated %d bufs each at the size of %d packets", txPort, bufs_no, batchSize)
 	
 	local pkt        = 1
 	local bucketSize = 0
@@ -565,12 +565,12 @@ function pcapSendBucketSlave(txPort, txDev, queueNo, rate, maxPackets, pktSize, 
 
 		if ( currBucket == bufs_no ) then currBucket =1 end
 	end
-	printf("[Dev %d] PCAP Sender Thread: Loaded %d packets in memory", txPort, pkt)
+	log:info("[Dev %d] PCAP Sender Thread: Loaded %d packets in memory", txPort, pkt)
 
 	local ctr = stats:newDevTxCounter(txDev,"plain")
 
 	local pkt = 1
-	while mg.running() and (not maxPackets or pkt <= maxPackets) do
+	while moongen.running() and (not maxPackets or pkt <= maxPackets) do
 		for i=1, bufs_no do
 			queue:send(bufs[i])
 			pkt = pkt + bufs[i].size

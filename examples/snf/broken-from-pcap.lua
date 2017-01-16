@@ -1,15 +1,14 @@
 --! @file broken-from-pcap.lua
 --! @brief Replay from PCAP
 
-local mg	= require "dpdk"
-local memory	= require "memory"
-local ffi	= require "ffi"
-local device	= require "device"
-local log	= require "log"
-local ts 	= require "timestamping"
-local log	= require "log"
-local pcap	= require "pcap"
-local stats	= require "stats"
+local moongen = require "moongen"
+local memory  = require "memory"
+local ffi     = require "ffi"
+local device  = require "device"
+local log     = require "log"
+local ts      = require "timestamping"
+local pcap    = require "pcap"
+local stats   = require "stats"
 
 ffi.cdef [[
 	void* malloc(size_t size);
@@ -41,23 +40,23 @@ sudo MoonGen examples/snf/broken-from-pcap.lua 0 10000000000 8 60 0 /home/katsik
 	-- We divide the total rate among all requested cores
 	rate    = (rate / cores) or (10000000000 / cores)
 
-	mg.sleepMillis(100)
+	moongen.sleepMillis(100)
 	local rxMempool = memory.createMemPool()
 	local txDev = device.config({ port=txPort, mempool=rxMempool, rxQueues=1, txQueues=cores })
 	txDev:wait()
 
-	print("Source PCAP: ", sourcePCAP)
-	print("   Tx  Port: ", txPort)
-	print("   Tx Cores: ", cores)
-	print("  Rate/Core: ", rate/1000000000,"Gbps")
-	print(" Packets No: ", maxPackets)
-	print("Packet Size: ", pktSize)
+	log:info("Source PCAP: %s", sourcePCAP)
+	log:info("   Tx  Port: %d", txPort)
+	log:info("   Tx Cores: %d", cores)
+	log:info("  Rate/Core: %.2f Gbps", rate/1000000000)
+	log:info(" Packets No: %d", maxPackets)
+	log:info("Packet Size: %d", pktSize)
 
 	-- Find the total number of packets of the PCAP file
 	local pcapRecords = countPCAPPackets(sourcePCAP, pktSize)
-	print("Total PCAP records: ", pcapRecords)
+	log:info("Total PCAP records: %d", pcapRecords)
 	local pcapRecordsForCore = round(pcapRecords/cores)
-	print(" PCAP records/core:", pcapRecordsForCore)
+	log:info(" PCAP records/core: %d", pcapRecordsForCore)
 	-- Each core has to transmit a different portion of the file
 	local maxPacketsPerCore = 0
 	if ( maxPackets == nil ) then
@@ -72,15 +71,16 @@ sudo MoonGen examples/snf/broken-from-pcap.lua 0 10000000000 8 60 0 /home/katsik
 
 		local minPCAPRange = i*pcapRecordsForCore + 1
 		local maxPCAPRange = minPCAPRange + pcapRecordsForCore - 1
-		printf("[Queue %d] MinRange %d, MaxRange %d", i, minPCAPRange, maxPCAPRange)
-		mg.launchLua("pcapSendSlave", txPort, i, sourcePCAP, pktSize, minPCAPRange, maxPCAPRange, maxPacketsPerCore, true)
+		log:info("[Queue %d] MinRange %d, MaxRange %d", i, minPCAPRange, maxPCAPRange)
+		moongen.startTask("pcapSendSlave", txPort, i, sourcePCAP, pktSize, minPCAPRange, maxPCAPRange, maxPacketsPerCore, true)
 	end
-	mg.waitForSlaves()
+
+	moongen.waitForTasks()
 end
 
 --! @brief: Loads the PCAP file and send batches of packets packet out.
 function pcapSendSlave(port, queue, sourcePCAP, pktSize, minPCAPRange, maxPCAPRange, maxPacketsPerCore, showStats)
-	printf("[Queue %d] PCAP Sender Thread is running", queue)
+	log:info("[Queue %d] PCAP Sender Thread is running", queue)
 
 	local core      = queue
 	local queue     = device.get(port):getTxQueue(queue)
@@ -90,15 +90,15 @@ function pcapSendSlave(port, queue, sourcePCAP, pktSize, minPCAPRange, maxPCAPRa
 	local memBankSize = 2047
 	local memBanksNo  = round(totalPktsNo / memBankSize)
 	local leftOver    = math.abs(totalPktsNo - memBanksNo*memBankSize)
-	--printf("[Core %d] Memory Banks: %d, Memory Bank Size: %d packets, PktSize: %d", core, memBanksNo, memBankSize, pktSize)
+	--log:info("[Core %d] Memory Banks: %d, Memory Bank Size: %d packets, PktSize: %d", core, memBanksNo, memBankSize, pktSize)
 
 	local largeBufs   = allocLargeBuf(totalPktsNo, pktSize)
-	printf("[Core %d] Huge memory allocated", core)
+	log:info("[Core %d] Huge memory allocated", core)
 
 	local mem   = memory.createMemPool()
 	local mBufs = mem:bufArray(memBankSize)
 	mBufs:alloc(pktSize)
-	printf("[Core %d] %d RTE mbufs allocated, each mbuf is %d bytes", core, memBankSize, pktSize)
+	log:info("[Core %d] %d RTE mbufs allocated, each mbuf is %d bytes", core, memBankSize, pktSize)
 
 	-- Load the PCAP file
 	local pcapArg     = 100000
@@ -117,21 +117,21 @@ function pcapSendSlave(port, queue, sourcePCAP, pktSize, minPCAPRange, maxPCAPRa
 	
 	local pkt       = 1
 	local curr      = 1
-	local lastPrint = mg.getTime()
+	local lastPrint = moongen.getTime()
 	local totalSent = 0
 	local lastTotal = 0
 	local lastSent  = 0
 	local ctr = stats:newDevTxCounter(dev, "plain")
-	while (mg.running()) and (not maxPacketsPerCore or pkt <= maxPacketsPerCore) do
+	while (moongen.running()) and (not maxPacketsPerCore or pkt <= maxPacketsPerCore) do
 
 		if ( pkt >= totalPktsNo ) then pkt=1  end
 
 		-- Send them out and keep statistics
 		totalSent = totalSent + queue:sendWithTimestamp(mBufs)
-		local time = mg.getTime()
+		local time = moongen.getTime()
 		if time - lastPrint > 1 then
 			local mpps = (totalSent - lastTotal) / (time - lastPrint) / 10^6
-			printf("[Queue %d] Sent %d packets, current rate %.2f Mpps, %.2f MBit/s, %.2f MBit/s wire rate", core, totalSent, mpps, mpps * pktSize * 8, mpps * (pktSize+20) * 8)
+			log:info("[Queue %d] Sent %d packets, current rate %.2f Mpps, %.2f MBit/s, %.2f MBit/s wire rate", core, totalSent, mpps, mpps * pktSize * 8, mpps * (pktSize+20) * 8)
 			lastTotal = totalSent
 			lastPrint = time
 		end
@@ -141,11 +141,11 @@ function pcapSendSlave(port, queue, sourcePCAP, pktSize, minPCAPRange, maxPCAPRa
 
 	if showStats then ctr:finalize() end
 
-	mg.sleepMillis(500)
+	moongen.sleepMillis(500)
 	mBufs:freeAll()
 	memory.free(largeBufs)
 
-	printf("[Core %d] Sent %d packets", core, totalSent)
+	log:info("[Core %d] Sent %d packets", core, totalSent)
 end
 
 --! @brief: Counts the number of packets in a PCAP file.
@@ -213,7 +213,7 @@ function loadPCAPFractionInMemory(core, largeBufs, pcapReader, totalPktsNo, minP
 		end
 		counter = counter + 1
 	end
-	printf("[Core %d] Allocated memory for %d packets", core, totalPktsNo)
+	log:info("[Core %d] Allocated memory for %d packets", core, totalPktsNo)
 end
 
 function fillMBufs(mBufs, largeBufs, maxPacketsPerCore, totalPktsNo, memBankSize, currPktCnt)

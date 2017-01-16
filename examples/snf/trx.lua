@@ -1,19 +1,12 @@
 --! @file trx.lua
 --! @brief Send and receiver on the same port with timestamping
 
-local mg	= require "dpdk"
-local memory	= require "memory"
-local device	= require "device"
-local ts	= require "timestamping"
-local dpdkc	= require "dpdkc"
-local filter	= require "filter"
-
-local stats	= require "stats"
-local hist	= require "histogram"
-local timer	= require "timer"
-local log	= require "log"
-
-local ffi	= require "ffi"
+local moongen   = require "moongen"
+local memory    = require "memory"
+local device    = require "device"
+local stats     = require "stats"
+local timer     = require "timer"
+local log       = require "log"
 
 local ETH_DST   = "ec:f4:bb:d6:06:d8"
 local IP_SRC    = "10.0.0.1"
@@ -21,22 +14,22 @@ local IP_DST    = "200.0.0.1"
 local PORT_SRC  = 1234
 local PORT_DST  = 1234
 local BASE_PORT = 1000
---local NUM_PORTS = 60000 - BASE_PORT
+local NUM_PORTS = 60000 - BASE_PORT
 local NUM_PORTS = 10
-local NUM_FLOWS	= 254
+local NUM_FLOWS = 254
 local RUN_TIME  = 20
-local txCounterSlaveOn = false
+local TX_COUNTER_SLAVE_ON = false
 
 --Usage: sudo ../../build/MoonGen trx.lua 0 10000000000 60 100000000000 1
 
 function master(trxPortNo, txRate, pktSize, maxTxPackets, timestamping)
 	local trxPortNo, txRate, pktSize, maxTxPackets = tonumberall(trxPortNo, txRate, pktSize, maxTxPackets)
 	if not trxPortNo or not txRate or not pktSize or not maxTxPackets or not timestamping then
-		return log:info([[Usage: trxPortNo txRate pktSize maxTxPackets timestamping]])
+		return log:error("Usage: trxPortNo txRate pktSize maxTxPackets timestamping")
 	end
 
-	local txCores    = {2, 4, 6, 8, 10, 12}
-	local rxCores    = {14}
+	local txCores = {2, 4, 6, 8, 10, 12}
+	local rxCores = {14}
 	
 	if (timestamping <= 0) then timestamping = false
 	else timestamping = true end
@@ -54,45 +47,46 @@ function master(trxPortNo, txRate, pktSize, maxTxPackets, timestamping)
 	if (maxTxPackets <= 0) then maxTxPackets = nil
 	else maxTxPackets = math.floor(maxTxPackets / txQueuesNo) end
 
-	print("Tx        Port: ", trxPortNo)
-	print("Tx   Rate/Core: ", txRate/1000000000,"Gbps")
-	print("Tx  Packets No: ", maxTxPackets)
-	print("Tx Packet Size: ", pktSize)
+	log:info("TRx          Port: %d", trxPortNo)
+	log:info("Tx         Queues: %d", txQueuesNo)
+	log:info("Rx         Queues: %d", rxQueuesNo)
+	log:info("Tx      Rate/Core: %.2f Gbps", txRate/1000000000)
+	log:info("Tx  Packets/Queue: %.2f", maxTxPackets)
+	log:info("Tx    Packet Size: %d", pktSize)
 
 	-- Tx threads
 	for q = 0, txQueuesNo-1 do
 		txDev:getTxQueue(q):setRate(txRate)
 		local coreOfQueue = txCores[math.fmod(q, #txCores) + 1]
-		mg.launchLuaOnCore(coreOfQueue ,"txSlave", trxPortNo, q, coreOfQueue, maxTxPackets, pktSize, timestamping)
+		moongen.startTaskOnCore(coreOfQueue ,"txTask", trxPortNo, q, coreOfQueue, maxTxPackets, pktSize, timestamping)
 	end
 
 	-- Rx threads
 	for q = 0, rxQueuesNo-1 do
 		local coreOfQueue = rxCores[math.fmod(q, #rxCores) + 1]
-		mg.launchLuaOnCore(coreOfQueue, "rxCounterSlave", rxDev, q, coreOfQueue, timestamping)
+		moongen.startTaskOnCore(coreOfQueue, "rxCounterTask", rxDev, q, coreOfQueue, timestamping)
 	end
 
 	-- Tx counter
-	if (timestamping) then 
-		local txCtr = mg.launchLua("txCounterSlave", {txDev})
-		printTxStats(txCtr:wait())
-	end
+--	if (timestamping) then 
+--		local txCtr = moongen.launchLua("txCounterTask", {txDev})
+--		printTxStats(txCtr:wait())
+--	end
 
-	mg.waitForSlaves()
+	moongen.waitForTasks()
 end
 
 --! @brief: A thread that transmits frames with randomized IPs and ports
-function txSlave(port, queueNo, core, maxPacketsPerCore, pktSize, timestamping)
+function txTask(port, queueNo, core, maxPacketsPerCore, pktSize, timestamping)
 	local queue = device.get(port):getTxQueue(queueNo)
-	printf("[Core %d] [Queue %d] Tx Slave", core, queueNo)
+	log:info("[Core %2d] [Tx Queue %2d] Tx Task", core, queueNo)
 
 	-- Create a UDP packet template
 	local mem = memory.createMemPool(function(buf)
 		buf:getUdpPacket():fill{
-			pktLength = pktSize, -- this sets all length headers fields in all used protocols
-			ethSrc    = queue,   -- get the src mac from the device
+			pktLength = pktSize, -- this sets the total frame length
+			ethSrc    = queue,   -- get the src MAC from the device
 			ethDst    = ETH_DST,
-			--ip4Src = IP_SRC, --ip4Dst = IP_DST, --udpSrc = PORT_SRC, --udpDst = PORT_DST,
 			--payload will be initialized to 0x00 as new memory pools are initially empty
 		}
 	end)
@@ -100,74 +94,67 @@ function txSlave(port, queueNo, core, maxPacketsPerCore, pktSize, timestamping)
 	MAX_BURST_SIZE = 1
 	if (not timestamping) then MAX_BURST_SIZE = 31 end
 
-	local lastPrint = mg.getTime()
+	local lastPrint = moongen.getTime()
 	local totalSent = 0
 	local lastTotal = 0
 	local lastSent  = 0
 
-	local baseSrcIP = parseIPAddress(IP_SRC)
-	local baseDstIP = parseIPAddress(IP_DST)
-	-- a buf array is essentially a very thing wrapper around a rte_mbuf*[], 
-	-- i.e. an array of pointers to packet buffers
+	-- a buf array is essentially a very thin wrapper around a rte_mbuf*[]
 	local bufs = mem:bufArray(MAX_BURST_SIZE)
 
-	-- Positions of IP addresses in a frame
-	local src_idx_start = 26
-	local src_idx_end   = 26
-	local dst_idx_start = 30
-	local dst_idx_end   = 30
+	local flow      = 0
+	local baseSrcIP = parseIPAddress(IP_SRC)
+	local baseDstIP = parseIPAddress(IP_DST)
 
-	while (mg.running()) and (not maxPacketsPerCore or totalSent <= maxPacketsPerCore) do
+	while (moongen.running()) and (not maxPacketsPerCore or totalSent <= maxPacketsPerCore) do
+		-- Take a batch of  empty mbufs
 		bufs:alloc(pktSize)
-		for _, buf in ipairs(bufs) do
-			local data = ffi.cast("uint8_t*", buf.pkt.data)
-			data[dst_idx_start] = 1 + math.random(NUM_FLOWS)
-		
-		--	-- Select randomized IP addresses and ports
-		--	-- Change idx_end-idx_start bytes randomly
-		--	--for i = src_idx_start, src_idx_end do
-		--	--	data[i] = 1 + math.random(NUM_FLOWS)
-		--	--end
-		--	for i = dst_idx_start, dst_idx_end do
-		--		data[i] = 1 + math.random(NUM_FLOWS)
-		--	end
-		--	--local pkt = buf:getUdpPacket()
-		--	--pkt.ip4.src:set(baseSrcIP + math.random(NUM_FLOWS) - 1)
-		--	--pkt.ip4.dst:set(baseDstIP + math.random(NUM_FLOWS) - 1)
-		--
-		--	-- Randmize ports as well
-		--	--pkt.udp.src = (BASE_PORT + math.random(NUM_PORTS) - 1)
-		--	--pkt.udp.dst = (BASE_PORT + math.random(NUM_PORTS) - 1)
-		end
-		--bufs:offloadUdpChecksums()
 
-		-- Send packets
+		for _, buf in ipairs(bufs) do
+			local pkt = buf:getUdpPacket()
+
+			-- Modify the IP addresses and ports of each packet
+			pkt.ip4.src:set(baseSrcIP + flow)
+			pkt.ip4.dst:set(baseDstIP + flow)
+			pkt.udp:setSrcPort(PORT_SRC + math.random(NUM_FLOWS) - 1)
+			pkt.udp:setDstPort(PORT_DST + math.random(NUM_FLOWS) - 1)
+
+			flow = incAndWrap(flow, NUM_FLOWS)
+		end
+		bufs:offloadUdpChecksums()
+
+		-- Send packets, either timestamped or not
 		local sent = 1
 		if (timestamping) then queue:sendWithTimestamp(bufs)
 		else sent = queue:send(bufs) end
+
+		-- Count packets
 		totalSent = totalSent + sent
 
-		if (not txCounterSlaveOn) then
-			lastPrint, lastTotal = countAndPrintThroughputPerCore(core, totalSent, lastPrint, lastTotal, pktSize)
+		-- Count throughput
+		if (TX_COUNTER_SLAVE_ON) then
+			lastPrint, lastTotal = countAndPrintThroughputPerCore(core, queueNo, totalSent, lastPrint, lastTotal, pktSize)
 		end
 	end
-	mg.sleepMillis(500)
-	mg.stop()
-	--printf("[Core %d] Sent %d packets", core, totalSent)
+
+	moongen.sleepMillis(500)
+	moongen.stop()
+	log:info("[Core %2d] [Tx Queue %2d] Sent %d packets", core, queueNo, totalSent)
 end
 
 --! @brief: A thread that counts statistics about the transmitted packets
-function txCounterSlave(devs)
-	txCounterSlaveOn = true
+function txCounterTask(devs)
+	TX_COUNTER_SLAVE_ON = true
 	local ctrs = map(devs, function(dev) return stats:newDevTxCounter(dev) end)
 	--local ctrs = stats:newDevTxCounter(dev)
+
 	local runtime = timer:new(RUN_TIME - 1)
-	mg.sleepMillisIdle(1000) -- measure the steady state
-	while mg.running() and runtime:running() do
+	moongen.sleepMillisIdle(1000) -- measure the steady state
+	while moongen.running() and runtime:running() do
 		for _, ctr in ipairs(ctrs) do
 			ctr:update()
 		end
-		mg.sleepMillisIdle(10)
+		moongen.sleepMillisIdle(10)
 	end
 	local tp, stdDev, sum = 0, 0, 0
 	for _, ctr in ipairs(ctrs) do
@@ -179,51 +166,50 @@ function txCounterSlave(devs)
 	return tp, stdDev, sum
 end
 
-function rxCounterSlave(rxDev, queueNo, core, timestamping)
-	local queue = rxDev:getRxQueue(queueNo)
-	local tscFreq    = mg.getCyclesFrequency()
-	local timestamps = ffi.new("uint64_t[64]")
-	local bufs = memory.bufArray(64)
-	----if (timestamping) then queue.dev:filterTimestamps(queue) end
+function rxCounterTask(rxDev, queueNo, core, timestamping)
+	local queue      = rxDev:getRxQueue(queueNo)
+	local tscFreq    = moongen.getCyclesFrequency()
+	local bufs       = memory.bufArray(64)
+
+	-- use whatever filter appropriate for your packet type
+	queue:filterUdpTimestamps()
 
 	local ctr     = stats:newDevRxCounter(rxDev, "plain")
 	local pkts    = 0
 	local rxts    = {}
 	local results = {}
-	while mg.running() do
-		
-		-- Receiver that time-stamps in software
-		local rx
-		if (timestamping) then rx = queue:recvWithTimestamps(bufs, timestamps)
+
+	while moongen.running() do
+		-- Receiver that timestamps in software
+		local rx = 0
+		if (timestamping) then rx = queue:recvWithTimestamps(bufs)
 		else rx = queue:recv(bufs) end
 
 		-- Calculate the latencies of this batch
-		--if (timestamping) and (math.fmod(pkts, 2) == 0) then
 		if (timestamping) then
 			for i = 1, rx do
-				--if ( math.fmod(i, 2) == 0 ) then 
-				local rxTs = timestamps[i - 1]
+				local rxTs = bufs[i].udata64
 				local txTs = bufs[i]:getSoftwareTxTimestamp()
 				results[#results + 1] = tonumber(rxTs - txTs) / tscFreq * 10^9 -- to nanoseconds
 				rxts[#rxts + 1] = tonumber(rxTs)
-				--end
 			end
 		end
 
 		pkts = pkts + rx
 		ctr:update()
-		bufs:freeAll()
+		bufs:free(rx)
 	end
 	ctr:finalize()
 
 	if (timestamping) then
-		print("--- Latency calculator")
+		log:info("[Core %2d] [Tx Queue %2d] Latency calculator", core, queueNo)
 		dumpLatencyToFile(results)
 	end
 
-	printf("[Core %d] Rx terminated after receiving %d packets", core, pkts)
+	log:info("[Core %2d] [Tx Queue %2d] Received %d packets", core, queueNo, pkts)
 end
 
+--! @brief: A method that prints Tx statistics (CPU cycles/packet)
 function printTxStats(ctr)
 	local rates = {}
 	rates[#rates+1] = ctr
@@ -231,17 +217,17 @@ function printTxStats(ctr)
 	local freqInGHz = 3.20
 	local cyclesPerPkt = freqInGHz * 10^3 / rates.avg
 	local relStdDev = rates.stdDev / rates.avg
-	print("[Tx] Cycles/Pkt: " .. cyclesPerPkt .. " StdDev: " .. cyclesPerPkt * relStdDev)
+	log:info("[Tx] Cycles/Pkt: %.2f, StdDev: %.3f", cyclesPerPkt, cyclesPerPkt * relStdDev)
 end
 
 --! @brief: A method that "manually" derives the packet rate per core
-function countAndPrintThroughputPerCore(core, totalSent, lastPrint, lastTotal, pktSize)
+function countAndPrintThroughputPerCore(core, queueNo, totalSent, lastPrint, lastTotal, pktSize)
 	-- Count throughput
-	local time = mg.getTime()
+	local time = moongen.getTime()
 	if time - lastPrint > 1 then
 		local mpps = (totalSent - lastTotal) / (time - lastPrint) / 10^6
-		printf("[Core %d] Sent %d packets, current rate %.2f Mpps, %.2f MBit/s, %.2f MBit/s wire rate", 
-				core, totalSent, mpps, mpps * pktSize * 8, mpps * (pktSize+20) * 8)
+		log:info("[Core %2d] [Tx Queue %2d] Sent %d packets, current rate %.2f Mpps, %.2f MBit/s, %.2f MBit/s wire rate", 
+				core, queueNo, totalSent, mpps, mpps * pktSize * 8, mpps * (pktSize+20) * 8)
 		lastTotal = totalSent
 		lastPrint = time
 	end
@@ -249,6 +235,7 @@ function countAndPrintThroughputPerCore(core, totalSent, lastPrint, lastTotal, p
 	return lastPrint, lastTotal
 end
 
+--! @brief: A method that dumps the collected packet latencies to a file
 function dumpLatencyToFile(results)
 	local f = io.open("latency.dat", "w+")
 	for i, v in ipairs(results) do

@@ -11,8 +11,8 @@ local timer   = require "timer"
 local log     = require "log"
 local ffi     = require "ffi"
 
-local ETH_DST = "ec:f4:bb:d6:06:d8"
-local IP_SRC  = "1.0.0.1"
+local ETH_DST = "52:54:E2:FD:00:04"
+local IP_SRC  = "124.0.0.1"
 
 ------------------
 -- 40 Gbps traffic
@@ -78,7 +78,7 @@ local IP_DST_RIGHT  = {
 --}
 
 local PORT_SRC  = 1234
-local PORT_DST  = 1234
+local PORT_DST  = 5678
 local BASE_PORT = 1000
 
 local PTP_PORT_SRC = 1000
@@ -96,8 +96,8 @@ function master(trxPortsNo, txRate, pktSize, maxTxPackets, timestamping, side)
 		return log:info([[Usage: #ofTRxPorts txRate pktSize maxTxPackets timestamping side]])
 	end
 
-	if (trxPortsNo > 3) then
-		return log:info([[Too many NICs. We support up to 3.]])
+	if (trxPortsNo > 4) then
+		return log:info([[Too many NICs. We support up to 4.]])
 	end
 
 	if (timestamping <= 0) then timestamping = false
@@ -112,7 +112,7 @@ function master(trxPortsNo, txRate, pktSize, maxTxPackets, timestamping, side)
 	local txQueuesNo = 2
 	local rxQueuesNo = 2
 	local txCores    = { {2}, {4}, {6}, {8} }
-	local rxCores    = { {10}, {12}, {14}, {14} }
+	local rxCores    = { {10}, {12}, {14}, {0} }
 
 	if (maxTxPackets <= 0) then maxTxPackets = nil end
 	-- We divide the total rate among all requested cores
@@ -136,7 +136,7 @@ function master(trxPortsNo, txRate, pktSize, maxTxPackets, timestamping, side)
 	-- Wait until the links are up
 	device.waitForLinks()
 
-	-- Tx threads (We transmit in a single queue per port)
+	-- Tx threads (We transmit to a single queue per port)
 	local txQueue = 0
 	for i=0, #txDevs-1 do
 		txDevs[i+1]:getTxQueue(txQueue):setRate(txRate)
@@ -191,8 +191,8 @@ function txTask(port, queueNo, core, maxPacketsPerCore, pktSize, timestamping, s
 			ethDst    = ETH_DST,
 			ip4Src    = IP_SRC, --src_subnet_list[port + 1],
 			ip4Dst    = dst_subnet_list[port + 1],  -- Each Tx thread sends packet to a different subnet
-			--udpSrc = PORT_SRC,
-			--udpDst = PORT_DST,
+			udpSrc    = PORT_SRC,
+			udpDst    = PORT_DST,
 			--payload will be initialized to 0x00 as new memory pools are initially empty
 		}
 	end)
@@ -225,9 +225,10 @@ function txTask(port, queueNo, core, maxPacketsPerCore, pktSize, timestamping, s
 			local data = ffi.cast("uint8_t*", buf.udata64)
 			-- Select randomized IP addresses and ports
 			-- Change idx_end-idx_start bytes randomly
-			for i = src_idx_start, src_idx_end do
-				data[i] = 1 + math.random(NUM_FLOWS)
-			end
+		--	for i = src_idx_start, src_idx_end do
+		--		data[i] = 1 + math.random(NUM_FLOWS)
+		--		data[i] = ffi.cast("uint8_t", 1 + math.random(NUM_FLOWS))
+		--	end
 			--for i = dst_idx_start, dst_idx_end do
 			--	data[i] = 1 + math.random(NUM_FLOWS)
 			--end

@@ -8,9 +8,11 @@ local stats     = require "stats"
 local timer     = require "timer"
 local log       = require "log"
 
-local ETH_DST   = "ec:f4:bb:d6:06:d8"
+local ETH_DST   = "52:54:85:B0:00:00"
 local IP_SRC    = "10.0.0.1"
 local IP_DST    = "200.0.0.1"
+local IP_SRC_2  = "192.168.24.1"
+local IP_DST_2  = "4.32.56.10"
 local PORT_SRC  = 1234
 local PORT_DST  = 1234
 local BASE_PORT = 1000
@@ -112,6 +114,14 @@ function txTask(port, queueNo, core, maxPacketsPerCore, pktSize, timestamping)
 
 		for _, buf in ipairs(bufs) do
 			local pkt = buf:getUdpPacket()
+
+			if ( math.random(5) <= 2 ) then
+				baseSrcIP = parseIPAddress(IP_SRC)
+				baseDstIP = parseIPAddress(IP_DST)
+			else
+				baseSrcIP = parseIPAddress(IP_SRC_2)
+				baseDstIP = parseIPAddress(IP_DST_2)
+			end
 
 			-- Modify the IP addresses and ports of each packet
 			pkt.ip4.src:set(baseSrcIP + flow)

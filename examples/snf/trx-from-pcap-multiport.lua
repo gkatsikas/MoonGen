@@ -109,9 +109,9 @@ function pcapSendSlave(txPort, txDev, queueNo, rate, maxPackets, pktSize, source
 	log:info("[Dev %d] PCAP Sender Thread: Allocated space for %d packets", txPort, batchSize)
 	
 	local bucketSize = 0
-	local pcapReader = pcapReader:newPcapReader(sourcePCAP, 10000)
+	local pcapReader = pcap:newReader(sourcePCAP, 10000)
 	while not pcapReader.done and (not maxPackets or pkt <= maxPackets) and (bucketSize <= batchSize) do
-		local rd = pcapReader:readPkt(bufs, true)
+		local rd = pcapReader:read(bufs)
 		bucketSize = bucketSize + rd
 		break
 	end
@@ -139,9 +139,9 @@ function pcapSendSlaveWithTS(txPort, txDev, queueNo, rate, maxPackets, pktSize, 
 	local bufs = mem:bufArray(pcapSize)
 	bufs:alloc(pktSize)
 	local bucketSize = 0
-	local pcapReader = pcapReader:newPcapReader(sourcePCAP, 10000)
+	local pcapReader = pcap:newReader(sourcePCAP, 10000)
 	while not pcapReader.done do
-		local rd = pcapReader:readPkt(bufs, true)
+		local rd = pcapReader:read(bufs, true)
 		bucketSize = bucketSize + rd
 	end
 	log:info("[Dev %d] Tx PCAP Timestamper: Loaded %d packets in memory", txPort, bufs.size)
@@ -313,9 +313,9 @@ function txTimestamper(queue, pktSize, sourcePCAP, pcapSize)
 	local total_pkts = 0
 	while moongen.running() do
 		local bucketSize = 0
-		local pcapReader = pcapReader:newPcapReader(sourcePCAP, 10000)
+		local pcapReader = pcap:newReader(sourcePCAP, 10000)
 		while not pcapReader.done do
-			local rd = pcapReader:readPkt(bufs, true)
+			local rd = pcapReader:read(bufs, true)
 			bucketSize = bucketSize + rd
 			queue:sendWithTimestamp(bufs)
 		end
@@ -365,9 +365,9 @@ function countPCAPPackets(sourcePCAP, pktSize)
 	local mem        = memory.createMemPool()
 	local buf        = mem:bufArray(1)
 	buf:alloc(pktSize)
-	local pcapReader = pcapReader:newPcapReader(sourcePCAP)
+	local pcapReader = pcap:newReader(sourcePCAP)
 	while not pcapReader.done do
-		local rd   = pcapReader:readPkt(buf, true)
+		local rd   = pcapReader:read(buf, true)
 		pktCounter = pktCounter + rd
 	end
 
@@ -385,9 +385,9 @@ function laodPCAPPackets(sourcePCAP, pktSize, pcapSize)
 	log:info("[PCAP Loader] Allocated space for %d packets", batchSize)
 	
 	bucketSize = 0
-	pcapReader = pcapReader:newPcapReader(sourcePCAP, 10000)
+	pcapReader = pcap:newReader(sourcePCAP, 10000)
 	while not pcapReader.done and (bucketSize <= batchSize) do
-		local rd = pcapReader:readPkt(bufs, true)
+		local rd = pcapReader:read(bufs, true)
 		bucketSize = bucketSize + rd
 	end
 	log:info("[PCAP Loader] Loaded %d packets in memory", bufs.size)
@@ -406,9 +406,9 @@ function extractUDPInfoFromPCAP(sourcePCAP, pktSize)
 
 	local udpCounter = 1
 
-	local pcapReader = pcapReader:newPcapReader(sourcePCAP)
+	local pcapReader = pcap:newReader(sourcePCAP)
 	while not pcapReader.done do
-		local rd = pcapReader:readPkt(buf, true)
+		local rd = pcapReader:read(buf, true)
 
 		-- Inspect the packet
 		for _, b in ipairs(buf) do
@@ -467,13 +467,13 @@ function pcapSendBucketSlave(txPort, txDev, rate, pktSize, maxPackets, pcapSize,
 	local pkt        = 1
 	local bucketSize = 0
 	local currBucket = 0
-	local pcapReader = pcapReader:newPcapReader(sourcePCAP, 10000)
+	local pcapReader = pcap:newReader(sourcePCAP, 10000)
 	while not pcapReader.done and (not maxPackets or pkt <= maxPackets) and (bucketSize <= batchSize) do
 		if ( bucketSize >= batchSize ) then
 			bucketSize = 0
 			currBucket = currBucket + 1
 		end
-		local rd = pcapReader:readPkt(bufs[currBucket], true)
+		local rd = pcapReader:read(bufs[currBucket], true)
 		bucketSize = bucketSize + rd
 		pkt = pkt + rd
 	end

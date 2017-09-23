@@ -75,11 +75,11 @@ function rxTask(core, port, rxDev, maxPackets, timestamping)
 
 	log:info("[Core %2d] [Rx Queue %2d] Received %d packets", core, port, pkts)
 
-	if (timestamping) then
-		log:info("Latency calculator")
-		dumpLatencyToFile(results)
-		log:info("\t Done")
-	end
+--	if (timestamping) then
+--		log:info("Latency calculator")
+--		dumpLatencyToFile(results)
+--		log:info("\t Done")
+--	end
 end
 
 function dumpLatencyToFile(results)

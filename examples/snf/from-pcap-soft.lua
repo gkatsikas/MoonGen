@@ -28,8 +28,8 @@ function master(trxPortsNo, rate, pktSize, maxPackets, sourcePCAP0, sourcePCAP1,
 
 	local txQueuesNo = 2
 	local rxQueuesNo = 2
-	local txCores    = { {2}, {4}, {6}, {8} }
-	local rxCores    = { {10}, {12}, {14}, {14} }
+	local txCores    = { {0}, {2}, {4}, {6} }
+	local rxCores    = { {8}, {10}, {12}, {14} }
 
 	sourcePCAP0 = sourcePCAP0
 	sourcePCAP1 = sourcePCAP1

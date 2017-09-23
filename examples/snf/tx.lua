@@ -8,9 +8,9 @@ local stats     = require "stats"
 local timer     = require "timer"
 local log       = require "log"
 
-local ETH_DST   = "ec:f4:bb:d6:06:d8"
-local IP_SRC    = "10.0.0.1"
-local IP_DST    = "200.0.0.1"
+local ETH_DST   = "52:54:55:B2:00:00"
+local IP_SRC    = "96.0.0.1"
+local IP_DST    = "136.0.0.1"
 local PORT_SRC  = 1234
 local PORT_DST  = 1234
 local BASE_PORT = 1000
@@ -18,7 +18,7 @@ local NUM_PORTS = 60000 - BASE_PORT
 local NUM_FLOWS = 254
 
 local RUN_TIME	= 20
-local RANDOMIZE = false
+local RANDOMIZE = true
 
 --Usage: sudo ../../build/MoonGen tx.lua 0 10000000000 60 100000000 1
 
